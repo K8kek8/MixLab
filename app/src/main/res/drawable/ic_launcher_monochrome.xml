@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Versión de un solo color para los íconos temáticos de Android 13+ -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M23,54a18,18 0,1 0,36 0a18,18 0,1 0,-36 0z"
+        android:strokeColor="#000000"
+        android:strokeWidth="3" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M49,54a18,18 0,1 0,36 0a18,18 0,1 0,-36 0z"
+        android:strokeColor="#000000"
+        android:strokeWidth="3" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M37,48.5L37,59.5M45.5,43L45.5,65M54,36.5L54,71.5M62.5,43L62.5,65M71,48.5L71,59.5"
+        android:strokeColor="#000000"
+        android:strokeLineCap="round"
+        android:strokeWidth="4.5" />
+</vector>
