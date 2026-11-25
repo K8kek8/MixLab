@@ -249,7 +249,7 @@ private fun CrossfadeCard(vm: MixViewModel, onExport: () -> Unit) {
                 Text("A", color = ColorA, fontWeight = FontWeight.Bold)
                 Slider(
                     value = vm.crossfader,
-                    onValueChange = { vm.setCrossfader(it) },
+                    onValueChange = { vm.moveCrossfader(it) },
                     enabled = !vm.transitioning,
                     modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
                 )
@@ -261,7 +261,7 @@ private fun CrossfadeCard(vm: MixViewModel, onExport: () -> Unit) {
                 for (c in FadeCurve.values()) {
                     FilterChip(
                         selected = vm.curve == c,
-                        onClick = { vm.setCurve(c) },
+                        onClick = { vm.chooseCurve(c) },
                         label = { Text(c.label) },
                     )
                 }
@@ -270,7 +270,7 @@ private fun CrossfadeCard(vm: MixViewModel, onExport: () -> Unit) {
             Text("Duración del fundido: ${vm.fadeSeconds.toInt()} s", style = MaterialTheme.typography.labelMedium)
             Slider(
                 value = vm.fadeSeconds,
-                onValueChange = { vm.setFadeSeconds(it) },
+                onValueChange = { vm.changeFadeSeconds(it) },
                 valueRange = 1f..30f,
             )
 

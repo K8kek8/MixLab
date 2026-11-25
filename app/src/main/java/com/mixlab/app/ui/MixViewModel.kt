@@ -284,18 +284,18 @@ class MixViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- Crossfade ----------
 
-    fun setCrossfader(v: Float) {
+    fun moveCrossfader(v: Float) {
         if (mixer.transitioning) return
         crossfader = v
         mixer.crossfader = v
     }
 
-    fun setCurve(c: FadeCurve) {
+    fun chooseCurve(c: FadeCurve) {
         curve = c
         mixer.curve = c
     }
 
-    fun setFadeSeconds(s: Float) {
+    fun changeFadeSeconds(s: Float) {
         fadeSeconds = s
         mixer.fadeSeconds = s
     }
