@@ -19,7 +19,7 @@ El repositorio incluye un workflow (`.github/workflows/build.yml`) que compila e
 3. Cuando termine (3-6 min), abre la ejecución y descarga **MixLab-debug-apk** desde *Artifacts* (es un zip con `app-debug.apk`).
 4. Copia el APK al móvil e instálalo (hay que permitir «instalar apps de origen desconocido»).
 
-Si la compilación falla, abre el paso «Compilar APK de depuración» y copia el error: el código nunca se ha compilado antes, así que el primer intento puede necesitar algún arreglo.
+Si la compilación falla, abre el paso «Compilar APK de depuración» y busca las líneas que empiezan por `e:`: ahí está el error.
 
 ## Cómo se usa
 
@@ -87,7 +87,7 @@ El reproductor en vivo y el exportador usan el mismo `Mixer.render()`, así que 
 
 ## Limitaciones conocidas
 
-- **No se ha compilado ni probado en un dispositivo**: se escribió sin SDK de Android disponible. Es probable que haga falta corregir algún detalle al compilar por primera vez.
+- **Compila en GitHub Actions, pero no se ha probado en un dispositivo**: el audio, la interfaz y el rendimiento reales están por verificar.
 - Los valores de **reverb y eco** se eligieron sin escuchar y pueden necesitar ajuste (ganancias en `Effects.kt` y `Deck.kt`).
 - La reproducción **no continúa con la app en segundo plano**: haría falta un servicio en primer plano con notificación.
 - Cada canción se guarda en memoria como PCM de 16 bits (~10 MB por minuto), con tope de 15 minutos.
