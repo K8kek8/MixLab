@@ -2,73 +2,75 @@ package com.mixlab.app.ui
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Switch
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.mixlab.app.audio.FadeCurve
+import androidx.compose.ui.unit.sp
 import com.mixlab.app.audio.Param
-import kotlin.math.abs
 
-private val ColorA = Color(0xFF4FC3F7)
-private val ColorB = Color(0xFFFF8A65)
+/** Qué panel está abierto: el deck y la pestaña. */
+private class PanelRequest(val deck: Int, val tab: Int)
 
-private val effectGroups = listOf(
-    "Mezcla" to listOf(Param.VOLUME, Param.SPEED),
-    "Ecualizador" to listOf(Param.EQ_LOW, Param.EQ_MID, Param.EQ_HIGH),
-    "Filtro" to listOf(Param.FILTER),
-    "Eco" to listOf(Param.ECHO_MIX, Param.ECHO_TIME, Param.ECHO_FEEDBACK),
-    "Reverb" to listOf(Param.REVERB_MIX, Param.REVERB_SIZE),
-    "Flanger" to listOf(Param.FLANGER_MIX),
-)
-
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * Pantalla horizontal estilo mesa de DJ:
+ *  arriba   → BPM, título y vista general de cada canción, y el botón MENU
+ *  ondas    → una por deck, con el cabezal rojo fijo en el centro
+ *  centro   → disco A | mezclador (cargar, faders de volumen, SYNC) | disco B, con botones laterales
+ *  abajo    → play, marcas de selección «[» «]» y crossfader
+ */
 @Composable
 fun MixScreen(vm: MixViewModel) {
     var pendingDeck by remember { mutableIntStateOf(0) }
+    var exportDeckIdx by remember { mutableIntStateOf(0) }
+    var panel by remember { mutableStateOf<PanelRequest?>(null) }
+    var showMenu by remember { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) vm.loadTrack(pendingDeck, uri)
     }
-    val exporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("audio/wav")) { uri ->
+    val mixExporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("audio/wav")) { uri ->
         if (uri != null) vm.exportMix(uri)
+    }
+    val trackExporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("audio/wav")) { uri ->
+        if (uri != null) vm.exportDeck(exportDeckIdx, uri)
     }
 
     LaunchedEffect(vm.message) {
@@ -78,290 +80,276 @@ fun MixScreen(vm: MixViewModel) {
         }
     }
 
-    Scaffold(
-        snackbarHost = { SnackbarHost(snackbar) },
-        topBar = { TopAppBar(title = { Text("MixLab") }) },
-    ) { pad ->
-        Column(
-            modifier = Modifier
-                .padding(pad)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            DeckCard("DECK A", ColorA, vm.decks[0], 0, vm) {
-                pendingDeck = 0
-                picker.launch(arrayOf("audio/*"))
-            }
-            DeckCard("DECK B", ColorB, vm.decks[1], 1, vm) {
-                pendingDeck = 1
-                picker.launch(arrayOf("audio/*"))
-            }
-            CrossfadeCard(vm) { exporter.launch("mezcla.wav") }
-            EffectsCard(vm)
-        }
-    }
-}
+    Surface(Modifier.fillMaxSize(), color = Bg, contentColor = TextMain) {
+        Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
+            Column(
+                Modifier.fillMaxSize().padding(horizontal = 6.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                TopBar(vm, onMenu = { showMenu = true }, onPitch = { panel = PanelRequest(it, TAB_PITCH) })
 
-// ───────────────────────── Deck ─────────────────────────
-
-@Composable
-private fun DeckCard(
-    title: String,
-    accent: Color,
-    ui: DeckUiState,
-    idx: Int,
-    vm: MixViewModel,
-    onLoad: () -> Unit,
-) {
-    var zoom by remember { mutableFloatStateOf(1f) }
-
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(title, color = accent, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.weight(1f))
-                OutlinedButton(onClick = onLoad, enabled = !ui.loading) { Text("Cargar canción") }
-            }
-            Text(ui.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
-
-            if (ui.loading) {
-                LinearProgressIndicator(progress = { ui.loadProgress }, modifier = Modifier.fillMaxWidth(), color = accent)
-                Text(ui.status, style = MaterialTheme.typography.bodySmall)
-            }
-
-            SpectrumView(ui = ui, zoom = zoom, onSeek = { vm.seek(idx, it) })
-
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("${fmtTime(ui.position)} / ${fmtTime(ui.duration)}", style = MaterialTheme.typography.bodySmall)
-                Text(
-                    "IN ${if (ui.inPoint >= 0) fmtTime(ui.inPoint) else "—"}   OUT ${if (ui.outPoint >= 0) fmtTime(ui.outPoint) else "—"}",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-
-            val pad = PaddingValues(horizontal = 8.dp)
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                Button(
-                    onClick = { vm.togglePlay(idx) },
-                    enabled = ui.loaded,
-                    contentPadding = pad,
-                    modifier = Modifier.weight(1.4f),
-                ) { Text(if (ui.playing) "⏸ Pausa" else "▶ Play") }
-                OutlinedButton(
-                    onClick = { vm.seek(idx, 0.0) }, enabled = ui.loaded,
-                    contentPadding = pad, modifier = Modifier.weight(1f),
-                ) { Text("⏮") }
-                OutlinedButton(
-                    onClick = { zoom = (zoom / 2f).coerceAtLeast(1f) }, enabled = ui.loaded,
-                    contentPadding = pad, modifier = Modifier.weight(1f),
-                ) { Text("Zoom −") }
-                OutlinedButton(
-                    onClick = { zoom = (zoom * 2f).coerceAtMost(16f) }, enabled = ui.loaded,
-                    contentPadding = pad, modifier = Modifier.weight(1f),
-                ) { Text("Zoom +") }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(
-                    onClick = { vm.markIn(idx) }, enabled = ui.loaded,
-                    contentPadding = pad, modifier = Modifier.weight(1f),
-                ) { Text("Marcar IN") }
-                OutlinedButton(
-                    onClick = { vm.markOut(idx) }, enabled = ui.loaded,
-                    contentPadding = pad, modifier = Modifier.weight(1f),
-                ) { Text("Marcar OUT") }
-                OutlinedButton(
-                    onClick = { if (ui.inPoint >= 0) vm.seek(idx, ui.inPoint) },
-                    enabled = ui.loaded && ui.inPoint >= 0,
-                    contentPadding = pad, modifier = Modifier.weight(1f),
-                ) { Text("Ir a IN") }
-                TextButton(
-                    onClick = { vm.clearMarks(idx) }, enabled = ui.loaded,
-                    contentPadding = pad, modifier = Modifier.weight(1f),
-                ) { Text("Borrar") }
-            }
-
-            // ---- BPM ----
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        if (ui.hasBpm) "%.1f BPM".format(ui.bpm) else "BPM —",
-                        fontWeight = FontWeight.Bold,
-                        color = accent,
-                    )
-                    val speed = ui.params[Param.SPEED] ?: 1f
-                    when {
-                        ui.hasBpm && abs(speed - 1f) > 0.002f ->
-                            Text("→ %.1f con la velocidad actual".format(ui.effectiveBpm), style = MaterialTheme.typography.labelSmall)
-                        ui.hasBpm && ui.beatConfidence < 0.3f ->
-                            Text("detección dudosa", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
-                        !ui.hasBpm && ui.loaded ->
-                            Text("no se detectó pulso", style = MaterialTheme.typography.labelSmall)
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    for (i in 0..1) {
+                        WaveLane(
+                            ui = vm.decks[i],
+                            label = deckLetter(i),
+                            accent = deckColor(i),
+                            zoomSec = vm.zoomSec,
+                            onZoom = { vm.cycleZoom() },
+                            onScrubStart = { vm.scrubStart(i) },
+                            onScrubBy = { vm.scrubBy(i, it) },
+                            onScrubEnd = { vm.scrubEnd(i) },
+                        )
                     }
                 }
-                FilterChip(
-                    selected = vm.snapToBeat,
-                    onClick = { vm.toggleSnap(!vm.snapToBeat) },
-                    label = { Text("Marcas al beat") },
-                )
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(
-                    onClick = { vm.scaleBpm(idx, 0.5) }, enabled = ui.hasBpm,
-                    contentPadding = pad, modifier = Modifier.weight(1f),
-                ) { Text("÷2") }
-                OutlinedButton(
-                    onClick = { vm.scaleBpm(idx, 2.0) }, enabled = ui.hasBpm,
-                    contentPadding = pad, modifier = Modifier.weight(1f),
-                ) { Text("×2") }
-                OutlinedButton(
-                    onClick = { vm.setGridHere(idx) }, enabled = ui.hasBpm,
-                    contentPadding = pad, modifier = Modifier.weight(1.3f),
-                ) { Text("Rejilla aquí") }
-                Button(
-                    onClick = { vm.syncBpm(idx) },
-                    enabled = ui.hasBpm && vm.decks[1 - idx].hasBpm,
-                    contentPadding = pad, modifier = Modifier.weight(1f),
-                ) { Text("Sync") }
+
+                Row(
+                    Modifier.weight(1f).fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    SidePanel(0, { panel = PanelRequest(0, it) }, Modifier.width(62.dp).fillMaxHeight())
+                    DiscBox(vm, 0, Modifier.weight(1f).fillMaxHeight())
+                    CenterMixer(
+                        vm,
+                        onLoad = {
+                            pendingDeck = it
+                            picker.launch(arrayOf("audio/*"))
+                        },
+                        modifier = Modifier.width(150.dp).fillMaxHeight(),
+                    )
+                    DiscBox(vm, 1, Modifier.weight(1f).fillMaxHeight())
+                    SidePanel(1, { panel = PanelRequest(1, it) }, Modifier.width(62.dp).fillMaxHeight())
+                }
+
+                BottomBar(vm)
             }
 
-            Text(
-                "Toca el espectro para saltar · arrastra para desplazar con zoom · " +
-                    "IN = dónde entra esta canción · OUT = dónde empieza a ceder la mezcla.\n" +
-                    "Líneas blancas = beats (más gruesas cada 4). ÷2/×2 corrige el tempo si sale doble o mitad; " +
-                    "«Rejilla aquí» alinea los beats con el cabezal; Sync iguala el tempo con el otro deck.",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = 56.dp))
         }
+    }
+
+    panel?.let { req ->
+        DeckPanelDialog(
+            vm = vm,
+            idx = req.deck,
+            initialTab = req.tab,
+            onClose = { panel = null },
+            onSaveTrack = {
+                exportDeckIdx = req.deck
+                trackExporter.launch("pista_${deckLetter(req.deck)}.wav")
+            },
+        )
+    }
+    if (showMenu) {
+        MenuDialog(vm, onClose = { showMenu = false }, onExportMix = { mixExporter.launch("mezcla.wav") })
     }
 }
 
-// ───────────────────────── Crossfade ─────────────────────────
+// ───────────────────────── Barra superior ─────────────────────────
 
 @Composable
-private fun CrossfadeCard(vm: MixViewModel, onExport: () -> Unit) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Crossfade", fontWeight = FontWeight.Bold)
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("A", color = ColorA, fontWeight = FontWeight.Bold)
-                Slider(
-                    value = vm.crossfader,
-                    onValueChange = { vm.moveCrossfader(it) },
-                    enabled = !vm.transitioning,
-                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                )
-                Text("B", color = ColorB, fontWeight = FontWeight.Bold)
-            }
-
-            Text("Curva", style = MaterialTheme.typography.labelMedium)
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                for (c in FadeCurve.values()) {
-                    FilterChip(
-                        selected = vm.curve == c,
-                        onClick = { vm.chooseCurve(c) },
-                        label = { Text(c.label) },
-                    )
-                }
-            }
-
-            Text("Duración del fundido: ${vm.fadeSeconds.toInt()} s", style = MaterialTheme.typography.labelMedium)
-            Slider(
-                value = vm.fadeSeconds,
-                onValueChange = { vm.changeFadeSeconds(it) },
-                valueRange = 1f..30f,
-            )
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Bass swap")
-                    Text(
-                        "Los graves de A salen y los de B entran a mitad del fundido",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Switch(checked = vm.bassSwap, onCheckedChange = { vm.toggleBassSwap(it) })
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Mezcla automática")
-                    Text(
-                        "Cuando el deck activo llega a su OUT, entra el otro desde su IN",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Switch(checked = vm.autoMix, onCheckedChange = { vm.toggleAutoMix(it) })
-            }
-
-            Button(
-                onClick = { vm.crossfadeNow() },
-                enabled = !vm.transitioning,
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text(if (vm.transitioning) "Mezclando…" else "Crossfade ahora") }
-
-            if (vm.exporting) {
-                LinearProgressIndicator(progress = { vm.exportProgress }, modifier = Modifier.fillMaxWidth())
-                Text("Renderizando la mezcla…", style = MaterialTheme.typography.bodySmall)
-            } else {
-                OutlinedButton(onClick = onExport, modifier = Modifier.fillMaxWidth()) {
-                    Text("Exportar mezcla completa (WAV)")
-                }
-            }
+private fun TopBar(vm: MixViewModel, onMenu: () -> Unit, onPitch: (Int) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().height(42.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        BpmBox(vm.decks[0], ColorA) { onPitch(0) }
+        DeckHeader(vm, 0, Modifier.weight(1f))
+        Box(
+            Modifier
+                .clip(RoundedCornerShape(18.dp))
+                .background(Brush.horizontalGradient(listOf(Color(0xFF2A3AA8), Color(0xFF5A2AA8))))
+                .clickable(onClick = onMenu)
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("MENU", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
         }
-    }
-}
-
-// ───────────────────────── Efectos ─────────────────────────
-
-@Composable
-private fun EffectsCard(vm: MixViewModel) {
-    var sel by remember { mutableIntStateOf(0) }
-    val ui = vm.decks[sel]
-    val accent = if (sel == 0) ColorA else ColorB
-
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Efectos por deck", fontWeight = FontWeight.Bold)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(selected = sel == 0, onClick = { sel = 0 }, label = { Text("Deck A") })
-                FilterChip(selected = sel == 1, onClick = { sel = 1 }, label = { Text("Deck B") })
-            }
-            for ((group, params) in effectGroups) {
-                Text(group, style = MaterialTheme.typography.titleSmall, color = accent, modifier = Modifier.padding(top = 8.dp))
-                for (p in params) {
-                    ParamSlider(p, ui.params[p] ?: p.def, accent) { vm.setParam(sel, p, it) }
-                }
-            }
-            Text(
-                "Toca el nombre de un control para volver a su valor por defecto.",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        DeckHeader(vm, 1, Modifier.weight(1f))
+        BpmBox(vm.decks[1], ColorB) { onPitch(1) }
     }
 }
 
 @Composable
-private fun ParamSlider(p: Param, value: Float, accent: Color, onChange: (Float) -> Unit) {
-    Column {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(p.label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.clickable { onChange(p.def) })
-            Text(p.fmt(value), style = MaterialTheme.typography.bodySmall, color = accent)
-        }
-        Slider(
-            value = value,
-            onValueChange = onChange,
-            valueRange = p.min..p.max,
-            colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent),
+private fun BpmBox(ui: DeckUiState, accent: Color, onClick: () -> Unit) {
+    Column(
+        Modifier.width(54.dp).clickable(onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            if (ui.hasBpm) "%.1f".format(ui.effectiveBpm) else "—",
+            color = accent,
+            fontWeight = FontWeight.Bold,
+            fontSize = 15.sp,
+        )
+        Text("BPM", color = TextDim, fontSize = 8.sp)
+        Text(
+            "PITCH",
+            color = accent,
+            fontSize = 9.sp,
+            modifier = Modifier
+                .border(1.dp, accent.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
+                .padding(horizontal = 5.dp, vertical = 1.dp),
         )
     }
 }
 
-private fun fmtTime(sec: Double): String {
-    val s = sec.toInt().coerceAtLeast(0)
-    return "%d:%02d".format(s / 60, s % 60)
+@Composable
+private fun DeckHeader(vm: MixViewModel, idx: Int, modifier: Modifier) {
+    val ui = vm.decks[idx]
+    val accent = deckColor(idx)
+    val title = when {
+        ui.loading -> ui.status + if (ui.loadProgress < 1f) " ${(ui.loadProgress * 100).toInt()}%" else ""
+        ui.busy -> ui.status
+        else -> ui.title
+    }
+    Column(modifier) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                title,
+                color = accent,
+                fontWeight = FontWeight.Bold,
+                fontSize = 15.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text(fmtTime(ui.position), color = accent, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+        }
+        if (ui.loading) {
+            LinearProgressIndicator(
+                progress = { ui.loadProgress },
+                modifier = Modifier.fillMaxWidth().height(14.dp).padding(vertical = 5.dp),
+                color = accent,
+            )
+        } else {
+            OverviewBar(ui, accent, onSeek = { vm.seek(idx, it) })
+        }
+    }
+}
+
+// ───────────────────────── Discos y mezclador ─────────────────────────
+
+@Composable
+private fun DiscBox(vm: MixViewModel, idx: Int, modifier: Modifier) {
+    Box(modifier, contentAlignment = Alignment.Center) {
+        DiscView(
+            ui = vm.decks[idx],
+            accent = deckColor(idx),
+            onTogglePlay = { vm.togglePlay(idx) },
+            onScrubStart = { vm.scrubStart(idx) },
+            onScrubBy = { vm.scrubBy(idx, it) },
+            onScrubEnd = { vm.scrubEnd(idx) },
+            modifier = Modifier.aspectRatio(1f, matchHeightConstraintsFirst = true),
+        )
+    }
+}
+
+@Composable
+private fun SidePanel(idx: Int, onOpen: (Int) -> Unit, modifier: Modifier) {
+    val accent = deckColor(idx)
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        listOf("FX" to TAB_FX, "EQ" to TAB_EQ, "CORTE" to TAB_EDIT, "MARCAS" to TAB_MARKS).forEach { (label, tab) ->
+            PadButton(label, accent, Modifier.fillMaxWidth().weight(1f), fontSize = 11.sp) { onOpen(tab) }
+        }
+    }
+}
+
+@Composable
+private fun CenterMixer(vm: MixViewModel, onLoad: (Int) -> Unit, modifier: Modifier) {
+    val a = vm.decks[0]
+    val b = vm.decks[1]
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(22.dp)) {
+            LoadButton(ColorA) { onLoad(0) }
+            LoadButton(ColorB) { onLoad(1) }
+        }
+        Row(
+            Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+        ) {
+            Fader(
+                a.params[Param.VOLUME] ?: 1f, 0f, 1.2f, ColorA, true,
+                { vm.setParam(0, Param.VOLUME, it) }, Modifier.width(46.dp).fillMaxHeight(),
+            )
+            Fader(
+                b.params[Param.VOLUME] ?: 1f, 0f, 1.2f, ColorB, true,
+                { vm.setParam(1, Param.VOLUME, it) }, Modifier.width(46.dp).fillMaxHeight(),
+            )
+        }
+        PadButton(
+            "SYNC", Color.White, Modifier.fillMaxWidth().height(38.dp),
+            enabled = a.hasBpm && b.hasBpm, filled = true, fontSize = 14.sp,
+        ) { vm.syncAuto() }
+    }
+}
+
+@Composable
+private fun LoadButton(color: Color, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .size(42.dp)
+            .clip(CircleShape)
+            .border(2.dp, color, CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text("♪+", color = color, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+    }
+}
+
+// ───────────────────────── Barra inferior ─────────────────────────
+
+@Composable
+private fun BottomBar(vm: MixViewModel) {
+    Row(
+        Modifier.fillMaxWidth().height(46.dp),
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Transport(vm, 0)
+        Fader(
+            vm.crossfader, 0f, 1f, Color.White, false,
+            { vm.moveCrossfader(it) }, Modifier.weight(1f).height(40.dp),
+        )
+        Transport(vm, 1)
+    }
+}
+
+/** Play, volver al inicio y marcas de selección «[» «]»; en el deck B van en espejo. */
+@Composable
+private fun Transport(vm: MixViewModel, idx: Int) {
+    val ui = vm.decks[idx]
+    val c = deckColor(idx)
+    Row(Modifier.fillMaxHeight(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        if (idx == 0) PlayButton(vm, idx)
+        if (idx == 0) {
+            PadButton("|◀\uFE0E", c, Modifier.width(40.dp).fillMaxHeight(), enabled = ui.loaded) { vm.seek(idx, 0.0) }
+        }
+        PadButton("[", SelColor, Modifier.width(40.dp).fillMaxHeight(), enabled = ui.loaded, fontSize = 18.sp) {
+            vm.markSelStart(idx)
+        }
+        PadButton("]", SelColor, Modifier.width(40.dp).fillMaxHeight(), enabled = ui.loaded, fontSize = 18.sp) {
+            vm.markSelEnd(idx)
+        }
+        if (idx == 1) {
+            PadButton("|◀\uFE0E", c, Modifier.width(40.dp).fillMaxHeight(), enabled = ui.loaded) { vm.seek(idx, 0.0) }
+        }
+        if (idx == 1) PlayButton(vm, idx)
+    }
+}
+
+@Composable
+private fun PlayButton(vm: MixViewModel, idx: Int) {
+    val ui = vm.decks[idx]
+    PadButton(
+        if (ui.playing) "❚❚" else "▶\uFE0E", // U+FE0E: forzar dibujo como texto, no como emoji
+        deckColor(idx),
+        Modifier.width(58.dp).fillMaxHeight(),
+        enabled = ui.loaded,
+        filled = true,
+        fontSize = 20.sp,
+    ) { vm.togglePlay(idx) }
 }

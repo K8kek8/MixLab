@@ -4,6 +4,7 @@ import java.io.File
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.min
 
 /**
  * Renderiza la mezcla completa (deck A → transición automática → deck B) a un WAV de 16 bits.
@@ -48,6 +49,29 @@ object MixExporter {
 
         writeHeader(file, written)
         onProgress(1f)
+    }
+
+    /** Guarda una pista (por ejemplo, una editada con cortar/pegar) tal cual, sin efectos ni crossfade. */
+    fun exportTrack(track: Track, file: File, onProgress: (Float) -> Unit) {
+        val total = track.frames
+        val chunk = 8192
+        val bytes = ByteArray(chunk * 4)
+        file.outputStream().buffered().use { os ->
+            os.write(ByteArray(WAV_HEADER)) // se rellena al final
+            var f = 0
+            while (f < total) {
+                val n = min(chunk, total - f)
+                for (i in 0 until n * 2) {
+                    val v = track.pcm[2 * f + i].toInt()
+                    bytes[2 * i] = v.toByte()
+                    bytes[2 * i + 1] = (v shr 8).toByte()
+                }
+                os.write(bytes, 0, n * 4)
+                f += n
+                onProgress(f.toFloat() / total)
+            }
+        }
+        writeHeader(file, total.toLong())
     }
 
     private fun writeHeader(file: File, totalFrames: Long) {

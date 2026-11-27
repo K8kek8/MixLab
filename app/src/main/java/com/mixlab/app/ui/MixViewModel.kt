@@ -10,11 +10,8 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.mixlab.app.audio.Analysis
 import com.mixlab.app.audio.AudioDecoder
 import com.mixlab.app.audio.AudioEngine
 import com.mixlab.app.audio.BpmDetector
@@ -22,10 +19,16 @@ import com.mixlab.app.audio.Deck
 import com.mixlab.app.audio.FadeCurve
 import com.mixlab.app.audio.MixExporter
 import com.mixlab.app.audio.Param
-import com.mixlab.app.audio.SpectrumAnalyzer
+import com.mixlab.app.audio.SAMPLE_RATE
+import com.mixlab.app.audio.Track
+import com.mixlab.app.audio.TrackEditor
+import com.mixlab.app.audio.Waveform
+import com.mixlab.app.audio.WaveformAnalyzer
 import java.io.File
 import kotlin.math.abs
 import kotlin.math.floor
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.round
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -39,14 +42,20 @@ class DeckUiState(val deck: Deck) {
     var title by mutableStateOf("Sin canción")
     var status by mutableStateOf("")
     var loading by mutableStateOf(false)
+    var busy by mutableStateOf(false)
     var loadProgress by mutableFloatStateOf(0f)
-    var analysis by mutableStateOf<Analysis?>(null)
-    var spectrumImage by mutableStateOf<ImageBitmap?>(null)
+    var wave by mutableStateOf<Waveform?>(null)
     var duration by mutableDoubleStateOf(0.0)
     var position by mutableDoubleStateOf(0.0)
     var playing by mutableStateOf(false)
+
+    /** Marcas de la transición (IN = dónde entra, OUT = dónde empieza a salir). -1 = sin marca. */
     var inPoint by mutableDoubleStateOf(-1.0)
     var outPoint by mutableDoubleStateOf(-1.0)
+
+    /** Selección para cortar/copiar: «[» y «]». -1 = sin marcar. */
+    var selStart by mutableDoubleStateOf(-1.0)
+    var selEnd by mutableDoubleStateOf(-1.0)
 
     /** Tempo detectado (a velocidad 1.0); 0 = sin detectar. */
     var bpm by mutableDoubleStateOf(0.0)
@@ -54,13 +63,18 @@ class DeckUiState(val deck: Deck) {
     /** Instante (s) del primer pulso, entre 0 y la duración de un pulso. */
     var firstBeat by mutableDoubleStateOf(0.0)
     var beatConfidence by mutableFloatStateOf(0f)
+    var canUndo by mutableStateOf(false)
 
     val params = mutableStateMapOf<Param, Float>().apply {
         Param.values().forEach { put(it, it.def) }
     }
-    val loaded: Boolean get() = analysis != null
+
+    val loaded: Boolean get() = wave != null
     val hasBpm: Boolean get() = bpm > 0.0
     val beatSec: Double get() = if (bpm > 0.0) 60.0 / bpm else 0.0
+    val hasSel: Boolean get() = selStart >= 0.0 && selEnd >= 0.0 && abs(selEnd - selStart) > 0.02
+    val selLo: Double get() = min(selStart, selEnd)
+    val selHi: Double get() = max(selStart, selEnd)
 
     /** BPM real teniendo en cuenta el control de velocidad. */
     val effectiveBpm: Double get() = bpm * (params[Param.SPEED] ?: 1f)
@@ -81,6 +95,28 @@ class MixViewModel(app: Application) : AndroidViewModel(app) {
     var exporting by mutableStateOf(false); private set
     var exportProgress by mutableFloatStateOf(0f); private set
     var message by mutableStateOf<String?>(null); private set
+
+    /** Segundos de canción visibles en las ondas grandes. */
+    var zoomSec by mutableFloatStateOf(8f); private set
+    var snapToBeat by mutableStateOf(true); private set
+
+    /** Fragmento copiado/cortado, listo para pegar en cualquier deck. */
+    var clipboard by mutableStateOf<TrackEditor.Clip?>(null); private set
+
+    /** Al pegar, ajusta el tempo del fragmento al de la pista de destino. */
+    var adjustTempo by mutableStateOf(true); private set
+
+    private class Snapshot(
+        val track: Track,
+        val wave: Waveform,
+        val bpm: Double,
+        val firstBeat: Double,
+        val title: String,
+    )
+
+    private val undo = listOf(ArrayDeque<Snapshot>(), ArrayDeque<Snapshot>())
+    private val scrubPos = DoubleArray(2)
+    private val scrubWasPlaying = BooleanArray(2)
 
     init {
         engine.start()
@@ -106,6 +142,7 @@ class MixViewModel(app: Application) : AndroidViewModel(app) {
 
     fun loadTrack(idx: Int, uri: Uri) {
         val ui = decks[idx]
+        if (ui.busy || ui.loading) return
         ui.deck.pause()
         ui.loading = true
         ui.loadProgress = 0f
@@ -116,31 +153,37 @@ class MixViewModel(app: Application) : AndroidViewModel(app) {
                 val track = withContext(Dispatchers.Default) {
                     AudioDecoder.decode(getApplication<Application>(), uri, name) { ui.loadProgress = it }
                 }
-                ui.status = "Analizando espectro…"
-                val analysis = withContext(Dispatchers.Default) { SpectrumAnalyzer.analyze(track) }
-                val image = withContext(Dispatchers.Default) { analysis.toBitmap().asImageBitmap() }
-                ui.status = "Detectando BPM…"
-                val beat = withContext(Dispatchers.Default) { BpmDetector.detect(track) }
-
-                ui.deck.load(track)
-                ui.bpm = beat?.bpm ?: 0.0
-                ui.firstBeat = beat?.firstBeatSec ?: 0.0
-                ui.beatConfidence = beat?.confidence ?: 0f
-                ui.title = name
-                ui.analysis = analysis
-                ui.spectrumImage = image
-                ui.duration = track.durationSec
-                ui.position = 0.0
-                ui.inPoint = -1.0
-                ui.outPoint = -1.0
-                ui.status = ""
+                installTrack(idx, track, null)
+            } catch (e: OutOfMemoryError) {
+                message = "Memoria insuficiente: prueba con una canción más corta"
             } catch (e: Exception) {
-                ui.status = ""
                 message = "No se pudo cargar: ${e.message ?: "formato no soportado"}"
             } finally {
                 ui.loading = false
+                ui.status = ""
             }
         }
+    }
+
+    /** Dibuja la onda, detecta el tempo y deja la pista lista en el deck. */
+    private suspend fun installTrack(idx: Int, track: Track, knownBpm: Double?) {
+        val ui = decks[idx]
+        ui.status = "Dibujando onda…"
+        val wave = withContext(Dispatchers.Default) { WaveformAnalyzer.analyze(track) }
+        ui.status = "Detectando BPM…"
+        val beat = withContext(Dispatchers.Default) { BpmDetector.detect(track, knownBpm) }
+
+        ui.deck.load(track)
+        ui.title = track.name
+        ui.wave = wave
+        ui.duration = track.durationSec
+        ui.position = 0.0
+        ui.bpm = beat?.bpm ?: knownBpm ?: 0.0
+        ui.firstBeat = beat?.firstBeatSec ?: 0.0
+        ui.beatConfidence = beat?.confidence ?: 0f
+        clearMarksAndSel(ui)
+        undo[idx].clear()
+        ui.canUndo = false
     }
 
     private fun queryName(uri: Uri): String {
@@ -154,7 +197,7 @@ class MixViewModel(app: Application) : AndroidViewModel(app) {
         return n ?: "Canción"
     }
 
-    // ---------- Transporte y marcas ----------
+    // ---------- Transporte ----------
 
     fun togglePlay(idx: Int) {
         val ui = decks[idx]
@@ -167,6 +210,42 @@ class MixViewModel(app: Application) : AndroidViewModel(app) {
         decks[idx].deck.seekSec(sec)
         decks[idx].position = sec.coerceIn(0.0, decks[idx].duration)
     }
+
+    // Scrub: arrastrar el disco o la onda. Mientras se arrastra el deck se silencia y, al soltar,
+    // sigue sonando si lo estaba.
+    fun scrubStart(idx: Int) {
+        val ui = decks[idx]
+        if (!ui.loaded) return
+        scrubWasPlaying[idx] = ui.deck.playing
+        scrubPos[idx] = ui.deck.positionSec
+        ui.deck.pause()
+    }
+
+    fun scrubBy(idx: Int, deltaSec: Double) {
+        val ui = decks[idx]
+        if (!ui.loaded) return
+        scrubPos[idx] = (scrubPos[idx] + deltaSec).coerceIn(0.0, ui.duration)
+        ui.deck.seekSec(scrubPos[idx])
+        ui.position = scrubPos[idx]
+    }
+
+    fun scrubEnd(idx: Int) {
+        val ui = decks[idx]
+        if (!ui.loaded) return
+        if (scrubWasPlaying[idx]) ui.deck.play()
+        scrubWasPlaying[idx] = false
+    }
+
+    fun cycleZoom() {
+        zoomSec = when {
+            zoomSec < 6f -> 8f
+            zoomSec < 12f -> 16f
+            zoomSec < 24f -> 32f
+            else -> 4f
+        }
+    }
+
+    // ---------- Marcas de transición (IN / OUT) ----------
 
     fun markIn(idx: Int) {
         val ui = decks[idx]
@@ -182,9 +261,21 @@ class MixViewModel(app: Application) : AndroidViewModel(app) {
         ui.deck.outPointSec = ui.outPoint
     }
 
-    // ---------- BPM ----------
+    fun clearMarks(idx: Int) {
+        val ui = decks[idx]
+        ui.inPoint = -1.0
+        ui.outPoint = -1.0
+        ui.deck.inPointSec = -1.0
+        ui.deck.outPointSec = -1.0
+    }
 
-    var snapToBeat by mutableStateOf(true); private set
+    private fun clearMarksAndSel(ui: DeckUiState) {
+        clearMarks(ui.deck.index)
+        ui.selStart = -1.0
+        ui.selEnd = -1.0
+    }
+
+    // ---------- Beat / rejilla ----------
 
     fun toggleSnap(on: Boolean) {
         snapToBeat = on
@@ -194,7 +285,7 @@ class MixViewModel(app: Application) : AndroidViewModel(app) {
     private fun snap(ui: DeckUiState, t: Double): Double {
         if (!snapToBeat || !ui.hasBpm) return t
         val p = ui.beatSec
-        val k = Math.round((t - ui.firstBeat) / p)
+        val k = round((t - ui.firstBeat) / p)
         return (ui.firstBeat + k * p).coerceIn(0.0, ui.duration)
     }
 
@@ -211,6 +302,11 @@ class MixViewModel(app: Application) : AndroidViewModel(app) {
         if (!ui.hasBpm) return
         val p = ui.beatSec
         ui.firstBeat = ((ui.deck.positionSec % p) + p) % p
+    }
+
+    /** SYNC del centro: ajusta el deck que no es el principal (según el lado del crossfader). */
+    fun syncAuto() {
+        syncBpm(if (crossfader < 0.5f) 1 else 0)
     }
 
     /**
@@ -243,7 +339,6 @@ class MixViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * Desplaza el cabezal de este deck (como mucho medio beat) para que sus golpes caigan a la vez
      * que los del otro deck. [mult] = 2 o 0,5 cuando se sincronizó al doble o a la mitad del tempo.
-     * Si este deck está sonando oirás un pequeño salto: es el "empujón" de beat-match.
      */
     private fun alignPhase(idx: Int, mult: Double) {
         val me = decks[idx]
@@ -264,15 +359,7 @@ class MixViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun circularDist(a: Double, b: Double): Double {
         val d = abs(a - b)
-        return minOf(d, 1.0 - d)
-    }
-
-    fun clearMarks(idx: Int) {
-        val ui = decks[idx]
-        ui.inPoint = -1.0
-        ui.outPoint = -1.0
-        ui.deck.inPointSec = -1.0
-        ui.deck.outPointSec = -1.0
+        return min(d, 1.0 - d)
     }
 
     // ---------- Efectos ----------
@@ -318,6 +405,174 @@ class MixViewModel(app: Application) : AndroidViewModel(app) {
         mixer.transitionRequest = true
     }
 
+    // ---------- Edición: cortar, copiar, pegar ----------
+
+    fun markSelStart(idx: Int) {
+        val ui = decks[idx]
+        if (!ui.loaded) return
+        ui.selStart = snap(ui, ui.deck.positionSec)
+    }
+
+    fun markSelEnd(idx: Int) {
+        val ui = decks[idx]
+        if (!ui.loaded) return
+        ui.selEnd = snap(ui, ui.deck.positionSec)
+    }
+
+    fun clearSel(idx: Int) {
+        decks[idx].selStart = -1.0
+        decks[idx].selEnd = -1.0
+    }
+
+    fun toggleAdjustTempo(on: Boolean) {
+        adjustTempo = on
+    }
+
+    fun copySel(idx: Int) {
+        val ui = decks[idx]
+        val t = ui.deck.track ?: return
+        if (!ui.hasSel) {
+            message = SEL_HELP
+            return
+        }
+        val c = TrackEditor.Clip(
+            TrackEditor.slice(t, (ui.selLo * SAMPLE_RATE).toInt(), (ui.selHi * SAMPLE_RATE).toInt()),
+            ui.bpm,
+            ui.title,
+        )
+        clipboard = c
+        message = "Copiado: %.1f s".format(c.durationSec)
+    }
+
+    fun cutSel(idx: Int) = removeSel(idx, keepCopy = true)
+
+    fun deleteSel(idx: Int) = removeSel(idx, keepCopy = false)
+
+    private fun removeSel(idx: Int, keepCopy: Boolean) {
+        val ui = decks[idx]
+        val t = ui.deck.track ?: return
+        if (ui.busy || ui.loading) return
+        if (!ui.hasSel) {
+            message = SEL_HELP
+            return
+        }
+        val a = (ui.selLo * SAMPLE_RATE).toInt()
+        val b = (ui.selHi * SAMPLE_RATE).toInt()
+        val at = ui.selLo
+        val name = editedName(ui.title)
+        if (keepCopy) clipboard = TrackEditor.Clip(TrackEditor.slice(t, a, b), ui.bpm, ui.title)
+        runEdit(idx) {
+            val nt = withContext(Dispatchers.Default) { TrackEditor.remove(t, a, b, name) }
+            commitEdit(idx, nt, at)
+            message = if (keepCopy) "Cortado: queda en el portapapeles" else "Parte eliminada"
+        }
+    }
+
+    /**
+     * Pega el portapapeles en la posición del cabezal (ajustada al beat). Con [overlay] el fragmento se
+     * mezcla encima en vez de empujar el resto de la pista. En un deck vacío, el fragmento pasa a ser la pista.
+     */
+    fun paste(idx: Int, overlay: Boolean) {
+        val c = clipboard
+        if (c == null) {
+            message = "El portapapeles está vacío: copia o corta una parte primero"
+            return
+        }
+        val ui = decks[idx]
+        if (ui.busy || ui.loading) return
+        val t = ui.deck.track
+        if (t == null) {
+            runEdit(idx) {
+                installTrack(idx, Track(editedName(c.name), c.pcm), c.sourceBpm.takeIf { it > 0.0 })
+                message = "Fragmento cargado como pista nueva"
+            }
+            return
+        }
+
+        val target = ui.bpm
+        val doStretch = adjustTempo && target > 0.0 && c.sourceBpm > 0.0 && abs(c.sourceBpm - target) > 0.05
+        val ratio = if (doStretch) c.sourceBpm / target else 1.0
+        if (doStretch && ratio !in 0.5..2.0) {
+            message = "Tempos demasiado distintos para ajustar (%.0f y %.0f BPM)".format(c.sourceBpm, target)
+            return
+        }
+        val atSec = snap(ui, ui.deck.positionSec)
+        val at = (atSec * SAMPLE_RATE).toInt()
+        val name = editedName(ui.title)
+        runEdit(idx) {
+            val nt = withContext(Dispatchers.Default) {
+                val data = if (doStretch) TrackEditor.stretch(c.pcm, ratio) else c.pcm
+                if (overlay) TrackEditor.overlay(t, at, data, 0.8f, name) else TrackEditor.insert(t, at, data, name)
+            }
+            commitEdit(idx, nt, atSec)
+            message = if (overlay) "Fragmento superpuesto" else "Fragmento pegado"
+        }
+    }
+
+    fun undo(idx: Int) {
+        val ui = decks[idx]
+        val st = undo[idx]
+        if (st.isEmpty() || ui.busy || ui.loading) return
+        val s = st.removeLast()
+        ui.deck.replaceTrack(s.track, ui.deck.positionSec)
+        ui.wave = s.wave
+        ui.duration = s.track.durationSec
+        ui.bpm = s.bpm
+        ui.firstBeat = s.firstBeat
+        ui.title = s.title
+        clearMarksAndSel(ui)
+        ui.canUndo = st.isNotEmpty()
+        message = "Edición deshecha"
+    }
+
+    private fun editedName(title: String) = if (title.endsWith(" ✂")) title else "$title ✂"
+
+    /** Ejecuta una edición en segundo plano marcando el deck como ocupado y mostrando errores. */
+    private fun runEdit(idx: Int, block: suspend () -> Unit) {
+        val ui = decks[idx]
+        ui.busy = true
+        ui.status = "Editando…"
+        viewModelScope.launch {
+            try {
+                block()
+            } catch (e: OutOfMemoryError) {
+                message = "Memoria insuficiente para esta edición"
+            } catch (e: Exception) {
+                message = "Error al editar: ${e.message}"
+            } finally {
+                ui.busy = false
+                ui.status = ""
+            }
+        }
+    }
+
+    /** Pone la pista editada en el deck, recalcula onda y rejilla de beats, y guarda el estado anterior. */
+    private suspend fun commitEdit(idx: Int, newTrack: Track, positionSec: Double) {
+        val ui = decks[idx]
+        val old = ui.deck.track
+        val oldWave = ui.wave
+        val knownBpm = ui.bpm
+        ui.status = "Recalculando onda…"
+        val result = withContext(Dispatchers.Default) {
+            val w = WaveformAnalyzer.analyze(newTrack)
+            val b = if (knownBpm > 0.0) BpmDetector.detect(newTrack, knownBpm) else null
+            Pair(w, b)
+        }
+        if (old != null && oldWave != null) {
+            val st = undo[idx]
+            if (st.size >= MAX_UNDO) st.removeFirst()
+            st.addLast(Snapshot(old, oldWave, ui.bpm, ui.firstBeat, ui.title))
+        }
+        ui.deck.replaceTrack(newTrack, positionSec)
+        ui.wave = result.first
+        ui.duration = newTrack.durationSec
+        ui.title = newTrack.name
+        result.second?.let { ui.firstBeat = it.firstBeatSec }
+        ui.position = positionSec.coerceIn(0.0, newTrack.durationSec)
+        clearMarksAndSel(ui)
+        ui.canUndo = undo[idx].isNotEmpty()
+    }
+
     // ---------- Exportar ----------
 
     fun exportMix(uri: Uri) {
@@ -325,6 +580,20 @@ class MixViewModel(app: Application) : AndroidViewModel(app) {
             message = "Carga al menos una canción"
             return
         }
+        runExport(uri, "Mezcla exportada") { tmp -> MixExporter.export(mixer, tmp) { exportProgress = it } }
+    }
+
+    /** Guarda la pista de un deck (por ejemplo, una ya editada) como WAV. */
+    fun exportDeck(idx: Int, uri: Uri) {
+        val t = decks[idx].deck.track
+        if (t == null) {
+            message = "Carga una canción en este deck"
+            return
+        }
+        runExport(uri, "Pista guardada") { tmp -> MixExporter.exportTrack(t, tmp) { exportProgress = it } }
+    }
+
+    private fun runExport(uri: Uri, okMessage: String, render: (File) -> Unit) {
         exporting = true
         exportProgress = 0f
         viewModelScope.launch {
@@ -332,13 +601,13 @@ class MixViewModel(app: Application) : AndroidViewModel(app) {
                 withContext(Dispatchers.Default) {
                     val app = getApplication<Application>()
                     val tmp = File(app.cacheDir, "mix_export.wav")
-                    MixExporter.export(mixer, tmp) { exportProgress = it }
+                    render(tmp)
                     app.contentResolver.openOutputStream(uri)?.use { out ->
                         tmp.inputStream().use { it.copyTo(out) }
                     } ?: throw IllegalStateException("No se pudo abrir el destino")
                     tmp.delete()
                 }
-                message = "Mezcla exportada"
+                message = okMessage
             } catch (e: Exception) {
                 message = "Error al exportar: ${e.message}"
             } finally {
@@ -354,5 +623,10 @@ class MixViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         engine.stop()
         super.onCleared()
+    }
+
+    private companion object {
+        const val MAX_UNDO = 3
+        const val SEL_HELP = "Marca el inicio con « [ » y el final con « ] » (junto al botón de play)"
     }
 }

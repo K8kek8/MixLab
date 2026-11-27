@@ -65,6 +65,16 @@ class Deck(val index: Int) {
         consumed = false
     }
 
+    /**
+     * Sustituye la canción conservando el estado de reproducción (se usa al editar la pista).
+     * El hilo de audio lee la pista una vez por bloque y es inmutable, así que el cambio es seguro.
+     */
+    fun replaceTrack(t: Track, positionSec: Double) {
+        track = t
+        seekRequest = positionSec.coerceIn(0.0, t.durationSec)
+        consumed = false
+    }
+
     fun play() {
         val t = track ?: return
         if (posFrames >= t.frames - 2) seekRequest = 0.0
